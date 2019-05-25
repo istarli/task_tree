@@ -5,7 +5,7 @@
 #include <functional>
 using namespace std;
 
-ThreadPool tp(1);
+shared_ptr<ThreadPool> tp = make_shared<ThreadPool>(5);
 
 int main(int argc,char *argv[])
 {	
@@ -17,11 +17,11 @@ int main(int argc,char *argv[])
 			{
 				sleep(5);
 				cout << "hello" << endl;
-			});
+			}, tp);
 
 			// self->wait();
 			cout << "test" << endl;
-		});
+		}, tp);
 	}).run();
 
 	cout << "finish" << endl;
