@@ -6,52 +6,37 @@ Task::~Task()
 {
 	cout << "to delete task (" << this << ")" << endl;
 	wait();
-	for(auto s:sons){
-		delete s;
+	for(auto son:sons){
+		son.reset();
 	}
 	if(sons.empty())
 		cout << "no sons,task (" << this << ")" << endl;
 	else
-		cout << "sons deleted,task (" << this << ")" << endl;
-}
-
-
-void Task::set(Fun fun, Task* fa, bool suicide)
-{
-	this->done = false;
-	this->father = fa;
-	this->fun = fun;
-	this->suicide = suicide;
-	this->notice = false;
-
-	if(fa != nullptr){
-		this->notice = true;
-		this->suicide = false;
-		unique_lock<mutex> ulk(fa->mt);
-		cout << "push task (" << this << ") to father task (" << fa << ")" << endl;
-		fa->sons.push_back(this);
-	}
+		cout << "sons released,task (" << this << ")" << endl;
 }
 
 void Task::run()
 {
-	if(fun == nullptr)
+	if(fun_ == nullptr)
 		cout << "no work assigned for task (" << this << ")" << endl;
 	else
-		fun(this);
+		fun_(this);
 }
 
 void Task::wait()
 {
-	unique_lock<mutex> ulk(mt);
-	for(auto s:sons){
-		cv.wait(ulk,[s]{ return s->done; });
+	for(auto son:sons){
+		unique_lock<mutex> ulk(son->mt);
+		while(!son->done_){
+			son->cv.wait(ulk);
+		}
 	}
 }
 
-void Task::go(Fun fun, ThreadPool* pool)
+void Task::go(Fun fun, shared_ptr<ThreadPool> pool)
 {
-	Task* t = new Task(fun,this);
+	auto t = make_shared<Task>(fun);
+	sons.push_back(t);
 
 	if(pool){
 		pool->commit(t);
@@ -60,10 +45,9 @@ void Task::go(Fun fun, ThreadPool* pool)
 		thread([t,this]{
 			cout << "task ("<< this << ") employ new thread to do task (" << t << ")" << endl;
 			t->run();
-			lock_guard<mutex> ulk(t->father->mt);
-			// t->wait();
-			t->done = true;
-			t->father->cv.notify_all();	
+			lock_guard<mutex> ulk(t->mt);
+			t->done_ = true;
+			t->cv.notify_all();	
 		}).detach();
 	}
 }
@@ -72,10 +56,10 @@ void ThreadPool::set(int thNum)
 {
 	shutdown = false;
 	for(int i = 0; i < thNum; i++){
-		Worker* w = new Worker();
+		auto w = make_shared<Worker>();
 		w->setFunc([this,w]{
 			while(1){
-				Task* task;
+				shared_ptr<Task> task;
 				{
 					unique_lock<mutex> ulk(mt);
 					cv.wait(ulk,[this,w]{
@@ -94,16 +78,9 @@ void ThreadPool::set(int thNum)
 						<< ") do task (" << task << ")" << endl;
 				task->run();
 
-				if(task->notice){
-					lock_guard<mutex> ulk(task->father->mt);
-					// task->wait();
-					task->done = true;
-					task->father->cv.notify_all();
-				}
-				else if(task->suicide){
-					cout << "task (" << task << ") suicide" << endl;
-					delete task;
-				}
+				lock_guard<mutex> ulk(task->mt);
+				task->finish();
+				task->cv.notify_all();
 			}			
 		});
 		wks.push_back(w);
@@ -115,16 +92,14 @@ ThreadPool::~ThreadPool()
 	shutdown = true;
 	cv.notify_all();
 
-	for(auto w:wks) delete w;
+	for(auto w:wks) w.reset();
 
 	while(!taskQue.empty()){
-		Task* t = taskQue.front();
 		taskQue.pop();
-		if(t->suicide) delete t;
 	}
 }
 
-void ThreadPool::commit(Task* task)
+void ThreadPool::commit(shared_ptr<Task> task)
 {
 	unique_lock<mutex> ulk(mt);
 	cout << "pool (" << this << ") push task (" << task << ")" << endl;
@@ -139,14 +114,8 @@ void ThreadPool::commit(Task* task)
 	thread([task,this]{
 		cout << "pool ("<< this << ") employ new thread to do task (" << task << ")" << endl; 
 		task->run();
-		if(task->notice){
-			lock_guard<mutex> ulk(task->father->mt);
-			task->done = true;
-			task->father->cv.notify_all();
-		}
-		else if(task->suicide){
-			cout << "task (" << task << ") suicide" << endl;
-			delete task;
-		}	
+		lock_guard<mutex> ulk(task->mt);
+		task->finish();
+		task->cv.notify_all();
 	}).detach();
 }

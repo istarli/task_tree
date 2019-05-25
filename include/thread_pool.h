@@ -8,6 +8,7 @@
 #include <functional>
 #include <queue>
 #include <vector>
+#include <memory>
 using namespace std;
 
 #define __task__  Task* self
@@ -18,46 +19,39 @@ typedef function<void(Task*)> Fun;
 
 class Task{
 public:
-	Task() {set(nullptr,nullptr,false);}
-	Task(Fun fun) {set(fun,nullptr,false);}
-	Task(Fun fun, bool suicide) {set(fun,nullptr,suicide);}
-	Task(Fun fun, Task* fa) {set(fun,fa,false);}
+	Task(Fun fun) : fun_(fun), done_(false) {}
 	~Task();
 	void wait();
 	void run();
-	void go(Fun fun,ThreadPool* pool=nullptr);
+	void go(Fun fun,shared_ptr<ThreadPool> pool={});
 	void* const getId() {return this;}
-protected:
-	void set(Fun fun, Task* fa, bool suicide);
+	void finish() { done_ = true; }
 public:
-	Task* father;
-	bool done;
-	bool suicide; // to be deleted by thread
-	bool notice; // advertise done
-	vector<Task*> sons;
 	mutex mt;
 	condition_variable cv;
+	vector<shared_ptr<Task>> sons;
 private:
-	Fun fun;
+	Fun fun_;
+	bool done_;
 };
 
 class Worker{
 public:
-	Worker():busy(false),th(nullptr){}
-	~Worker(){
-		if(th){
+	Worker() : busy(false) {}
+	~Worker() {
+		if(th) {
 			th->join();
-			delete th;
+			th.reset();
 		}
 	}
-	bool isBusy() {return busy;}
-	void setBusy(bool b){busy = b;}
+	bool isBusy() { return busy; }
+	void setBusy(bool b) { busy = b; }
 	void setFunc(function<void(void)> f){
-		th = new thread(f);
+		th = make_shared<thread>(f);
 	}
 private:
 	bool busy;
-	thread* th;
+	shared_ptr<thread> th;
 };
 
 class ThreadPool{
@@ -65,14 +59,14 @@ public:
 	ThreadPool() {set(2);}
 	ThreadPool(int tNum) {set(tNum);}
 	~ThreadPool();
-	void commit(Task* task);
-	void commit(Fun f){commit(new Task(f,true));}
+	void commit(shared_ptr<Task> task);
+	void commit(Fun f){commit(make_shared<Task>(f));}
 	void* const getId() {return this;}
 protected:
 	void set(int tNum);
 private:
-	queue<Task*> taskQue;
-	vector<Worker*> wks;
+	queue<shared_ptr<Task>> taskQue;
+	vector<shared_ptr<Worker>> wks;
 	mutex mt;
 	condition_variable cv;
 	bool shutdown;
