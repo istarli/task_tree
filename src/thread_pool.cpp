@@ -33,7 +33,7 @@ void Task::wait()
 	}
 }
 
-void Task::go(Fun fun, shared_ptr<ThreadPool> pool)
+void Task::go(TaskFunc fun, shared_ptr<ThreadPool> pool)
 {
 	auto t = make_shared<Task>(fun);
 	sons.push_back(t);
@@ -56,8 +56,9 @@ void ThreadPool::set(int thNum)
 {
 	shutdown = false;
 	for(int i = 0; i < thNum; i++){
-		auto w = make_shared<Worker>();
-		w->setFunc([this,w]{
+		unique_ptr<Worker> wk(new Worker());
+		Worker* w = wk.get();
+		wk->setTaskFunc([this,w]{
 			while(1){
 				shared_ptr<Task> task;
 				{
@@ -83,7 +84,7 @@ void ThreadPool::set(int thNum)
 				task->cv.notify_all();
 			}			
 		});
-		wks.push_back(w);
+		wks.push_back(std::move(wk));
 	}
 }
 
@@ -92,7 +93,9 @@ ThreadPool::~ThreadPool()
 	shutdown = true;
 	cv.notify_all();
 
-	for(auto w:wks) w.reset();
+	for(auto& wk : wks){
+		wk.reset();
+	}
 
 	while(!taskQue.empty()){
 		taskQue.pop();
@@ -103,8 +106,8 @@ void ThreadPool::commit(shared_ptr<Task> task)
 {
 	unique_lock<mutex> ulk(mt);
 	cout << "pool (" << this << ") push task (" << task << ")" << endl;
-	for(auto w:wks){
-		if(!w->isBusy()){
+	for(auto& wk : wks){
+		if(!wk->isBusy()){
 			taskQue.push(task);
 			cv.notify_one();
 			return;

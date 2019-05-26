@@ -15,15 +15,18 @@ using namespace std;
 
 class Task;
 class ThreadPool;
-typedef function<void(Task*)> Fun;
+typedef function<void(Task*)> TaskFunc;
 
 class Task{
 public:
-	Task(Fun fun) : fun_(fun), done_(false) {}
+	Task(TaskFunc fun) : fun_(fun), done_(false) {}
 	~Task();
 	void wait();
 	void run();
-	void go(Fun fun,shared_ptr<ThreadPool> pool={});
+	void go(TaskFunc fun,shared_ptr<ThreadPool> pool={});
+	void go(function<void(void)> fun,shared_ptr<ThreadPool> pool={}) {
+		go([=](__task__){fun();}, pool);
+	}
 	void* const getId() {return this;}
 	void finish() { done_ = true; }
 public:
@@ -31,7 +34,7 @@ public:
 	condition_variable cv;
 	vector<shared_ptr<Task>> sons;
 private:
-	Fun fun_;
+	TaskFunc fun_;
 	bool done_;
 };
 
@@ -46,12 +49,13 @@ public:
 	}
 	bool isBusy() { return busy; }
 	void setBusy(bool b) { busy = b; }
-	void setFunc(function<void(void)> f){
-		th = make_shared<thread>(f);
+	void setTaskFunc(function<void(void)> f){
+		unique_ptr<thread> tmp(new thread(f)); 
+		swap(th, tmp);
 	}
 private:
 	bool busy;
-	shared_ptr<thread> th;
+	unique_ptr<thread> th;
 };
 
 class ThreadPool{
@@ -60,13 +64,18 @@ public:
 	ThreadPool(int tNum) {set(tNum);}
 	~ThreadPool();
 	void commit(shared_ptr<Task> task);
-	void commit(Fun f){commit(make_shared<Task>(f));}
+	void commit(TaskFunc f){
+		commit(make_shared<Task>(f));
+	}
+	void commit(function<void(void)> f) {
+		commit(make_shared<Task>([=](__task__){f();}));
+	}
 	void* const getId() {return this;}
 protected:
 	void set(int tNum);
 private:
 	queue<shared_ptr<Task>> taskQue;
-	vector<shared_ptr<Worker>> wks;
+	vector<unique_ptr<Worker>> wks;
 	mutex mt;
 	condition_variable cv;
 	bool shutdown;
