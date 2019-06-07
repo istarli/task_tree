@@ -17,35 +17,60 @@ class Task;
 class ThreadPool;
 typedef function<void(Task*)> TaskFunc;
 
+class Semaphore {
+public:
+	explicit Semaphore(int count=0) : count_(count) {
+	}
+
+	void Signal() {
+		unique_lock<mutex> lk(mt_);
+		++count_;
+		cv_.notify_one();
+	}
+
+	void Wait() {
+		unique_lock<mutex> lk(mt_);
+		cv_.wait(lk, [this]{ return count_ > 0; });
+		--count_;
+	}
+
+private:
+	int count_;
+	mutex mt_;
+	condition_variable cv_;
+};
+
 class Task{
 public:
-	Task(TaskFunc fun) : fun_(fun), done_(false) {}
+	Task(TaskFunc fun, bool isSon=false)
+		: fun_(fun), isSon_(isSon), sema_(0) {}
 	~Task();
-	void wait();
+
 	void run();
-	void go(TaskFunc fun,shared_ptr<ThreadPool> pool={});
-	void go(function<void(void)> fun,shared_ptr<ThreadPool> pool={}) {
+	void wait();
+	// Caution that the use of reference is necessary!
+	static void release(shared_ptr<Task>&);
+	void* const getId() { return this; }
+
+	void go(TaskFunc fun, shared_ptr<ThreadPool> pool={});
+	void go(function<void(void)> fun, shared_ptr<ThreadPool> pool={}) {
 		go([=](__task__){fun();}, pool);
 	}
-	void* const getId() {return this;}
-	void finish() { done_ = true; }
-public:
-	mutex mt;
-	condition_variable cv;
-	vector<shared_ptr<Task>> sons;
 private:
 	TaskFunc fun_;
-	bool done_;
+	bool isSon_;
+	Semaphore sema_;
+	vector<shared_ptr<Task>> sons_;
 };
 
 class Worker{
 public:
-	Worker() : busy(false) {}
+	friend class ThreadPool;
+	Worker() : busy(false),inited(false) {}
 	~Worker() {
 		if(th) {
 			th->join();
-			th.reset();
-		}
+		}		
 	}
 	bool isBusy() { return busy; }
 	void setBusy(bool b) { busy = b; }
@@ -55,6 +80,7 @@ public:
 	}
 private:
 	bool busy;
+	bool inited;
 	unique_ptr<thread> th;
 };
 
@@ -63,6 +89,7 @@ public:
 	ThreadPool() {set(2);}
 	ThreadPool(int tNum) {set(tNum);}
 	~ThreadPool();
+	void wait();
 	void commit(shared_ptr<Task> task);
 	void commit(TaskFunc f){
 		commit(make_shared<Task>(f));
@@ -74,25 +101,41 @@ public:
 protected:
 	void set(int tNum);
 private:
-	queue<shared_ptr<Task>> taskQue;
-	vector<unique_ptr<Worker>> wks;
 	mutex mt;
-	condition_variable cv;
+	condition_variable cv_task;
+	condition_variable cv_worker;
 	bool shutdown;
+	queue<shared_ptr<Task>> taskQue;
+	// Use unique_ptr to ensure that the worker is only exist in wks
+	vector<unique_ptr<Worker>> workerVec;
 };
 
 class Echo{
 public:
-	Echo():newline(true){}
-	Echo(bool nl):newline(nl){}
-	void operator()(string msg){
-		lock_guard<mutex> ulk(mt);
-		cout << msg;
-		if(newline) cout << endl;
+	static Echo& getInstance() {
+		static Echo instance;
+		return instance;
 	}
+
+	template<typename T>
+	void bar(T&& t){ cout << t; }
+
+	template<typename... Args>
+	void operator()(Args... args){
+		lock_guard<mutex> ulk(mt);
+		(cout << ... << args) << endl;
+	}
+
 private:
-	bool newline;
+	Echo(){}
+	Echo(const Echo&);
+	Echo& operator=(const Echo&);
 	static mutex mt;
+};
+
+// TODO : implement Singleton with std::do_once | unique_ptr
+class Singleton{
+
 };
 
 #endif

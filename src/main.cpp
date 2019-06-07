@@ -6,30 +6,44 @@
 using namespace std;
 
 shared_ptr<ThreadPool> tp = make_shared<ThreadPool>(5);
+static Echo& echo = Echo::getInstance();
+
+Semaphore sema(0);
 
 int main(int argc,char *argv[])
 {	
+	// Example for Semaphore
 	tp->commit([]{
-		sleep(5);
-		cout << "hello world" << endl;
+		sema.Wait();
+		cout << "world" << endl;
+	});
+	
+	tp->commit([]{
+		cout << "hello" << endl;
+		sleep(3);
+		sema.Signal();
 	});
 
-	Task([](__task__)
-	{
-		self->go([](__task__)
-		{
-			self->go([]
-			{
-				sleep(2);
-				cout << "hello" << endl;
-			}, tp);
+	tp->wait();
+	// Example for task tree
+	// Task([](__task__)
+	// {
+	// 	self->go([](__task__)
+	// 	{
+	// 		self->go([]
+	// 		{
+	// 			sleep(5);
+	// 			echo("son-son task");
+	// 		});
 
-			// self->wait();
-			cout << "test" << endl;
-		}, tp);
-	}).run();
+	// 		// self->wait();
+	// 		echo("son-task");
+	// 	});
+		
+	// 	echo("origin-task");
+	// }).run();
 
-	cout << "finish" << endl;
+	echo("finish",1,"haha");
 	
 	return 0;
 }

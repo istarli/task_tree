@@ -7,7 +7,7 @@ TARGET = main
 BIN_TARGET = ${BIN}/${TARGET}
 
 CC = g++
-CFLAGS = -g -Wall -I${INC} -std=c++11 -O0
+CFLAGS = -g -Wall -I${INC} -std=c++17 -O0
 #####################version 2#############################
 
 SOURCE = $(wildcard ${SRC}/*.cpp)
