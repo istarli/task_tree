@@ -101,12 +101,10 @@ private:
 class Echo{
 public:
 	static Echo& getInstance() {
+		// C++11 requires compiler to ensure the thread-safety for internal static variables.
 		static Echo instance;
 		return instance;
 	}
-
-	template<typename T>
-	void bar(T&& t){ cout << t; }
 
 	template<typename... Args>
 	void operator()(Args... args){
@@ -119,11 +117,6 @@ private:
 	Echo(const Echo&);
 	Echo& operator=(const Echo&);
 	static mutex mt;
-};
-
-// TODO : implement Singleton with std::do_once | unique_ptr
-class Singleton{
-
 };
 
 #endif
