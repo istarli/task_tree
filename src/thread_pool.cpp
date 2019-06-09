@@ -31,8 +31,11 @@ void Task::run()
 
 void Task::wait()
 {
-	for(auto son:sons_){
-		son->sema_.Wait();
+	for(auto& son:sons_){
+		unique_lock<mutex> ulk(son->mt);
+		while(!son->done_){
+			son->cv.wait(ulk);
+		}
 	}
 }
 
@@ -56,96 +59,121 @@ void Task::go(TaskFunc fun, shared_ptr<ThreadPool> pool)
 
 void Task::release(shared_ptr<Task>& task)
 {
+	task->done_ = true;
 	if(task->isSon_){
 		Task* tmp = task.get();
-		// To ensure that the shared_ptr object in father lives longer
+		// To ensure that the task object in it's father lives longer
 		task.reset();
-		tmp->sema_.Signal();
+		tmp->cv.notify_all();
 		return;
 	}
+	// To ensure that the task object is released before the thread re-enter the loop.
 	task.reset();
 }
 
-void ThreadPool::set(int thNum)
+ThreadPool::ThreadPool(int thNum) :
+	threadNum(thNum), 
+	busyNum(thNum), 
+	shutdown(false)
 {
-	shutdown = false;
-	for(int i = 0; i < thNum; i++){
-		unique_ptr<Worker> worker(new Worker());
-		auto w = worker.get(); 
-		worker->setTaskFunc([this,w]{
+	for(int i = 0; i < threadNum; i++){
+		workerVec.push_back(std::move(thread([this]{
 			while(1){
 				shared_ptr<Task> task;
 				{
 					unique_lock<mutex> ulk(mt);
+					--busyNum;	
 					while(!shutdown && taskQue.empty()){
-						if(w->inited){
-							w->inited = true;
-						} else {
-							w->setBusy(false);
-							echo("notify");
-							cv_worker.notify_one();							
+						if(0 == busyNum){
+							// Consider that ThreadPool::wait() may be called in multiply threads,
+							// using notify_all() here is necessary. 
+							cv_worker.notify_all();
 						}
 						cv_task.wait(ulk);
 					}
-					if(shutdown) return;
-					w->setBusy(true);
+					if(shutdown) {
+						return;
+					}
 					task = taskQue.front();
 					taskQue.pop();
 				}
-				echo("worker (", w, ") in pool (", getId(), ") do task (", task.get(), ")");
+				echo("worker (", std::this_thread::get_id(), ") in pool (", getId(), ") do task (", task.get(), ")");
 				task->run();
 				Task::release(task);
 			}			
-		});
-		workerVec.push_back(std::move(worker));
+		})));
 	}
+	// Ensure that all threads are in waiting mode (busyNum is 0) after constructor
+	wait();
 }
 
 ThreadPool::~ThreadPool()
 {
-	lock_guard<mutex> lg(mt);
-	shutdown = true;
-	// Process remain tasks
-	while(!taskQue.empty()){
-		// Caution that you need to change the state to 'finish' for remain tasks,
-		// otherwise it's father will be endless blocked.
-		Task::release(taskQue.front());
-		taskQue.pop();
+	{
+		lock_guard<mutex> lg(mt);
+		shutdown = true;
+		// Process remain tasks
+		while(!taskQue.empty()){
+			// Caution that you need to change the state to 'finish' for remain tasks,
+			// otherwise it's father will be endless blocked.
+			Task::release(taskQue.front());
+			taskQue.pop();
+			echo("here");
+		}
+		cv_task.notify_all();
 	}
-	cv_task.notify_all();
-	// Working threads will be joined when wks is released automatically.
+	// Release the lock and waiting for threads's exiting.
+	for(auto& th : workerVec) {
+		th.join();
+	}
 }
 
 void ThreadPool::wait()
 {
 	unique_lock<mutex> ulk(mt);
-	int cnt = taskQue.size();
-	for(auto& worker : workerVec){
-		if(worker->isBusy()){
-			++cnt;
-		}
-	}
-	while(cnt > 0) {
-		cv_worker.wait(ulk);
-		cnt--;
-	}
+	cv_worker.wait(ulk,[this]{
+		return 0 == busyNum || shutdown;
+	});
 }
 
+/*
+	Just push the task into taskQue.
+	Caution:
+		Deadlock maybe accure! The remained tasks in taskQue will not be executed if 
+	all threads are busy waiting these tasks to be finished. 
+*/
 void ThreadPool::commit(shared_ptr<Task> task)
 {
 	lock_guard<mutex> lg(mt);
 	echo("pool (", this, ") push task (", task, ")");
-	for(auto& worker : workerVec){
-		if(!worker->isBusy()){
-			taskQue.push(task);
-			cv_task.notify_one();
-			return;
-		}
+	taskQue.push(task);
+	++busyNum;
+	cv_task.notify_one();
+}
+
+/*
+	Do the task right now.
+	If all threads are busy now, create a new one.
+	No deadlock will be caused.
+*/
+void ThreadPool::doRightNow(shared_ptr<Task> task)
+{
+	lock_guard<mutex> lg(mt);
+	++busyNum;
+	if(busyNum < threadNum){
+		taskQue.push(task);
+		cv_task.notify_one();
+	} else {
+		// All workers are busy now, create a new thread
+		thread([this,task]()mutable{
+			echo("pool (",this,") employ new thread to do task (",task, ")");
+			task->run();
+			Task::release(task);
+			lock_guard<mutex> lg(mt);
+			--busyNum;
+			if(busyNum == 0){
+				cv_worker.notify_all();
+			}
+		}).detach();
 	}
-	// All workers are busy now, create a new thread
-	thread([this,task]()mutable{
-		echo("pool (",this,") employ new thread to do task (",task, ")"); 
-		task->run();
-		Task::release(task);
-	}).detach();
 }

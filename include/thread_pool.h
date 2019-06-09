@@ -17,10 +17,68 @@ class Task;
 class ThreadPool;
 typedef function<void(Task*)> TaskFunc;
 
+class Task{
+public:
+	Task(TaskFunc fun, bool isSon=false)
+		: fun_(fun), isSon_(isSon), done_(false) {}
+	~Task();
+
+	void* const getId() { return this; }
+	void run();
+	void wait();
+	// Caution that the use of reference is necessary!
+	static void release(shared_ptr<Task>&);
+
+	void go(TaskFunc fun, shared_ptr<ThreadPool> pool={});
+	void go(function<void(void)> fun, shared_ptr<ThreadPool> pool={}) {
+		go([=](__task__){fun();}, pool);
+	}
+private:
+	TaskFunc fun_;
+	bool isSon_;
+	bool done_;
+	vector<shared_ptr<Task>> sons_;
+	mutex mt;
+	condition_variable cv;
+};
+
+class ThreadPool{
+public:
+	ThreadPool(int trNum=2);
+	~ThreadPool();
+	
+	void* const getId() { return this; }
+	void wait();
+
+	void commit(TaskFunc f) {
+		commit(make_shared<Task>(f));
+	}
+	void commit(function<void(void)> f) {
+		commit(make_shared<Task>([=](__task__){f();}));
+	}
+	void commit(shared_ptr<Task> task);
+
+	void doRightNow(TaskFunc f) {
+		doRightNow(make_shared<Task>(f));
+	}
+	void doRightNow(function<void(void)> f) {
+		doRightNow(make_shared<Task>([=](__task__){f();}));
+	}
+	void doRightNow(shared_ptr<Task> task);
+private:
+	mutex mt;
+	condition_variable cv_task;
+	condition_variable cv_worker;
+	int threadNum;
+	int busyNum;
+	bool shutdown;
+	queue<shared_ptr<Task>> taskQue;
+	vector<thread> workerVec;
+};
+
 class Semaphore {
 public:
-	explicit Semaphore(int count=0) : count_(count) {
-	}
+	explicit Semaphore(int count=0) : count_(count) {}
 
 	void Signal() {
 		unique_lock<mutex> lk(mt_);
@@ -38,76 +96,6 @@ private:
 	int count_;
 	mutex mt_;
 	condition_variable cv_;
-};
-
-class Task{
-public:
-	Task(TaskFunc fun, bool isSon=false)
-		: fun_(fun), isSon_(isSon), sema_(0) {}
-	~Task();
-
-	void run();
-	void wait();
-	// Caution that the use of reference is necessary!
-	static void release(shared_ptr<Task>&);
-	void* const getId() { return this; }
-
-	void go(TaskFunc fun, shared_ptr<ThreadPool> pool={});
-	void go(function<void(void)> fun, shared_ptr<ThreadPool> pool={}) {
-		go([=](__task__){fun();}, pool);
-	}
-private:
-	TaskFunc fun_;
-	bool isSon_;
-	Semaphore sema_;
-	vector<shared_ptr<Task>> sons_;
-};
-
-class Worker{
-public:
-	friend class ThreadPool;
-	Worker() : busy(false),inited(false) {}
-	~Worker() {
-		if(th) {
-			th->join();
-		}		
-	}
-	bool isBusy() { return busy; }
-	void setBusy(bool b) { busy = b; }
-	void setTaskFunc(function<void(void)> f){
-		unique_ptr<thread> tmp(new thread(f)); 
-		swap(th, tmp);
-	}
-private:
-	bool busy;
-	bool inited;
-	unique_ptr<thread> th;
-};
-
-class ThreadPool{
-public:
-	ThreadPool() {set(2);}
-	ThreadPool(int tNum) {set(tNum);}
-	~ThreadPool();
-	void wait();
-	void commit(shared_ptr<Task> task);
-	void commit(TaskFunc f){
-		commit(make_shared<Task>(f));
-	}
-	void commit(function<void(void)> f) {
-		commit(make_shared<Task>([=](__task__){f();}));
-	}
-	void* const getId() {return this;}
-protected:
-	void set(int tNum);
-private:
-	mutex mt;
-	condition_variable cv_task;
-	condition_variable cv_worker;
-	bool shutdown;
-	queue<shared_ptr<Task>> taskQue;
-	// Use unique_ptr to ensure that the worker is only exist in wks
-	vector<unique_ptr<Worker>> workerVec;
 };
 
 class Echo{
