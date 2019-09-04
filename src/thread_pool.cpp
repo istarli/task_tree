@@ -5,7 +5,7 @@ static Echo& echo = Echo::getInstance();
 
 Task::~Task()
 {
-	cout << "to delete task (" << this << ")" << endl;
+	echo("to delete task (", this ,")");
 	wait();
 	// Due to the memory of shared_ptr will be released automatically,
 	// you don't need to call reset() explicitly here except that you want to
